@@ -207,7 +207,7 @@ async function scanQrCode(studentId, qrCodeToken, req) {
     requiresFingerprint: true,
     sessionToken: session.sessionToken,
     course: undefined, // frontend already has course context from session lookup below if needed
-    SessionId: session.id,
+    sessionId: session.id,
   };
 }
 

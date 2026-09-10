@@ -182,7 +182,7 @@ async function validateSessionForStudent(studentId, session) {
   if (!registered) throw AppError.forbidden('You are not registered for this course');
 
   const existingRecord = await prisma.attendanceRecord.findUnique({
-    where: { SessionId_studentId: { SessionId: session.id, studentId } },
+    where: { sessionId_studentId: { sessionId: session.id, studentId } },
   });
   if (existingRecord) throw AppError.conflict('Attendance already recorded for this session');
 }
@@ -228,7 +228,7 @@ async function recordAttendance(studentId, session, verificationMethod, req) {
       ipAddress: req?.ip,
       userAgent: req?.headers?.['user-agent'],
     },
-    include: { attendance_Sessions: { include: { course: true } } },
+    include: { attendance_sessions: { include: { course: true } } },
   });
 
   const student = await prisma.student.findUnique({ where: { id: studentId } });
@@ -236,7 +236,7 @@ async function recordAttendance(studentId, session, verificationMethod, req) {
     userId: student.userId,
     type: 'ATTENDANCE_RECORDED',
     title: 'Attendance Recorded',
-    message: `Your attendance for ${record.attendance_session.course.courseCode} was recorded as ${status}.`,
+    message: `Your attendance for ${record.attendance_sessions.course.courseCode} was recorded as ${status}.`,
   });
 
   await recordAudit({

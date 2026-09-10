@@ -1,0 +1,390 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id                     String                  @id @default(uuid())
+  email                  String                  @unique
+  passwordHash           String
+  role                   Role
+  isActive               Boolean                 @default(true)
+  mustChangePassword     Boolean                 @default(false)
+  lastLoginAt            DateTime?
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
+  admins                 admins?
+  auditLogs              AuditLog[]
+  lecturer               Lecturer?
+  notifications          Notification[]
+  refreshTokens          RefreshToken[]
+  student                Student?
+  fingerprintCredentials FingerprintCredential[]
+
+  @@index([role])
+  @@map("users")
+}
+
+model FingerprintCredential {
+  id           String    @id @default(uuid())
+  userId       String
+  credentialId String    @unique
+  publicKey    String
+  counter      BigInt    @default(0)
+  deviceLabel  String?
+  verified     Boolean   @default(false)
+  lastUsedAt   DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("fingerprint_credentials")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  userId    String
+  expiresAt DateTime
+  revoked   Boolean  @default(false)
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Student {
+  id                  String               @id @default(uuid())
+  userId              String               @unique
+  fullName            String
+  phoneNumber         String
+  gender              Gender
+  applicationNumber   String               @unique
+  departmentId        String
+  program             Program
+  level               Level
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  attendanceRecords   AttendanceRecord[]
+  biometric_records   biometric_records[]
+  courseRegistrations CourseRegistration[]
+  department          Department           @relation(fields: [departmentId], references: [id])
+  user                User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([departmentId])
+  @@index([applicationNumber])
+  @@map("students")
+}
+
+model Lecturer {
+  id                 String               @id @default(uuid())
+  userId             String               @unique
+  fullName           String
+  phoneNumber        String
+  gender             Gender
+  departmentId       String?
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  attendanceSessions AttendanceSession[]
+  course_assignments course_assignments[]
+  departments        Department?          @relation(fields: [departmentId], references: [id])
+  user               User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([departmentId])
+  @@map("lecturers")
+}
+
+model Department {
+  id        String     @id @default(uuid())
+  name      String     @unique
+  code      String     @unique
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+  courses   Course[]
+  lecturers Lecturer[]
+  students  Student[]
+
+  @@map("departments")
+}
+
+model Course {
+  id           String   @id @default(uuid())
+  courseCode   String   @unique
+  courseTitle  String
+  creditUnit   Int
+  departmentId String
+  program      Program
+  level        Level
+  semesterId   String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  attendanceSessions AttendanceSession[]
+  course_assignments course_assignments[]
+  registrations      CourseRegistration[]
+  department         Department           @relation(fields: [departmentId], references: [id])
+  semester           Semester?            @relation(fields: [semesterId], references: [id], onDelete: SetNull)
+
+  @@index([departmentId])
+  @@index([program, level])
+  @@index([semesterId])
+  @@map("courses")
+}
+
+model CourseRegistration {
+  id         String   @id @default(uuid())
+  studentId  String
+  courseId   String
+  semesterId String?
+  createdAt  DateTime @default(now())
+
+  course   Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  student  Student   @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  semester Semester? @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+
+  @@unique([studentId, courseId])
+  @@index([courseId])
+  @@index([studentId])
+  @@index([semesterId])
+  @@map("course_registrations")
+}
+
+model AttendanceSession {
+  id                   String           @id @default(uuid())
+  courseId             String
+  lecturerId           String
+  semesterId           String?
+  venue                String
+  date                 DateTime         @db.Date
+  startTime            DateTime
+  endTime              DateTime?
+  status               SessionStatus    @default(OPEN)
+  qrToken              String?          @unique
+  qrExpiresAt          DateTime?
+  sessionToken         String?          @unique
+  requiredVerification VerificationMode @default(QR_AND_FINGERPRINT)
+  createdAt            DateTime         @default(now())
+  updatedAt            DateTime         @updatedAt
+
+  attendance_records AttendanceRecord[]
+  course             Course             @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lecturer           Lecturer           @relation(fields: [lecturerId], references: [id], onDelete: Cascade)
+  semester           Semester?          @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+
+  @@index([lecturerId])
+  @@index([courseId])
+  @@index([semesterId])
+  @@index([status])
+  @@map("attendance_sessions")
+}
+
+model AttendanceRecord {
+  id                 String             @id @default(uuid())
+  sessionId          String
+  studentId          String
+  status             AttendanceStatus
+  verificationMethod VerificationMethod
+  recordedAt         DateTime           @default(now())
+  ipAddress          String?
+  userAgent          String?
+
+  attendance_sessions AttendanceSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  student             Student           @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, studentId])
+  @@index([studentId])
+  @@index([sessionId])
+  @@map("attendance_records")
+}
+
+model Notification {
+  id        String           @id @default(uuid())
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  isRead    Boolean          @default(false)
+  createdAt DateTime         @default(now())
+  user      User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, isRead])
+  @@map("notifications")
+}
+
+model AuditLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String
+  category  String
+  details   Json?
+  ipAddress String?
+  createdAt DateTime @default(now())
+  user      User?    @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([createdAt])
+  @@index([category])
+  @@map("audit_logs")
+}
+
+model admins {
+  id       String @id
+  userId   String @unique
+  fullName String
+  users    User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model biometric_records {
+  id                 String          @id
+  studentId          String
+  biometricType      BiometricType
+  externalTemplateId String?
+  status             BiometricStatus @default(PENDING)
+  enrolledAt         DateTime        @default(now())
+  verifiedAt         DateTime?
+  updatedAt          DateTime
+  students           Student         @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@index([status])
+  @@index([studentId])
+}
+
+model course_assignments {
+  id         String   @id
+  courseId   String
+  lecturerId String
+  semesterId String?
+  createdAt  DateTime @default(now())
+
+  courses   Course    @relation(fields: [courseId], references: [id], onDelete: Cascade)
+  lecturers Lecturer  @relation(fields: [lecturerId], references: [id], onDelete: Cascade)
+  semester  Semester? @relation(fields: [semesterId], references: [id], onDelete: Cascade)
+
+  @@unique([courseId, lecturerId])
+  @@index([lecturerId])
+  @@index([courseId])
+  @@index([semesterId])
+  @@map("course_assignments")
+}
+
+model AcademicSession {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  startDate DateTime
+  endDate   DateTime
+  isActive  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  semesters Semester[]
+
+  @@index([isActive])
+  @@map("academic_sessions")
+}
+
+model Semester {
+  id                String       @id @default(uuid())
+  name              SemesterName
+  academicSessionId String
+  isActive          Boolean      @default(false)
+  startDate         DateTime
+  endDate           DateTime
+  createdAt         DateTime     @default(now())
+  updatedAt         DateTime     @updatedAt
+
+  academicSession    AcademicSession      @relation(fields: [academicSessionId], references: [id], onDelete: Cascade)
+  courses            Course[]
+  registrations      CourseRegistration[]
+  courseAssignments  course_assignments[]
+  attendanceSessions AttendanceSession[]
+
+  @@unique([academicSessionId, name])
+  @@index([academicSessionId])
+  @@index([isActive])
+  @@map("semesters")
+}
+
+enum SemesterName {
+  FIRST
+  SECOND
+}
+
+enum Role {
+  SUPER_ADMIN
+  LECTURER
+  STUDENT
+}
+
+enum Gender {
+  MALE
+  FEMALE
+}
+
+enum Program {
+  NDE
+  NDM
+  HND
+}
+
+enum Level {
+  NDE1
+  NDE2
+  ND1
+  ND2
+  HND1
+  HND2
+}
+
+enum SessionStatus {
+  OPEN
+  CLOSED
+}
+
+enum VerificationMethod {
+  FINGERPRINT
+  DEVICE_FINGERPRINT
+  FACIAL
+  QR_CODE
+  QR_AND_FINGERPRINT
+  QR_FALLBACK
+  MANUAL_OVERRIDE
+}
+
+enum VerificationMode {
+  QR_CODE
+  DEVICE_FINGERPRINT
+  QR_AND_FINGERPRINT
+}
+
+enum AttendanceStatus {
+  PRESENT
+  LATE
+  ABSENT
+}
+
+enum NotificationType {
+  ATTENDANCE_RECORDED
+  SESSION_STARTED
+  SESSION_CLOSED
+  LOW_ATTENDANCE_WARNING
+  MISSED_CLASS
+  SYSTEM
+}
+
+enum BiometricStatus {
+  PENDING
+  VERIFIED
+  FAILED
+}
+
+enum BiometricType {
+  FINGERPRINT
+  FACIAL
+}

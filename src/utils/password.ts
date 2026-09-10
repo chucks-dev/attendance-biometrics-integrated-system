@@ -1,0 +1,16 @@
+import bcrypt from 'bcryptjs';
+
+const SALT_ROUNDS = 12;
+
+export async function hashPassword(plain: string): Promise<string> {
+  return bcrypt.hash(plain, SALT_ROUNDS);
+}
+
+export async function comparePassword(plain: string, hash: string): Promise<boolean> {
+  return bcrypt.compare(plain, hash);
+}
+
+// Application-wide password policy: min 8 chars, at least one letter, one number.
+export function isPasswordStrong(password: string): boolean {
+  return /^(?=.*[A-Za-z])(?=.*\d).{8,}$/.test(password);
+}

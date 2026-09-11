@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const prisma = require('../config/prisma');
 const AppError = require('../utils/AppError');
 const { generateQrToken, generateSessionToken, generateQrDataUrl } = require('./qr.service');
@@ -5,6 +6,15 @@ const { notify, notifyMany } = require('./notification.service');
 const { recordAudit } = require('./auditLog.service');
 const webauthnService = require('./webauthn.service');
 const env = require('../config/env');
+
+function debugToken(token) {
+  if (!token) return 'EMPTY';
+  return `${token.length}:${crypto
+    .createHash('sha256')
+    .update(token)
+    .digest('hex')
+    .slice(0, 12)}`;
+}
 
 // ------------------------------------------------------------
 // SESSION LIFECYCLE (lecturer)
@@ -53,7 +63,13 @@ async function createSession(lecturerId, input, req) {
     include: { course: true },
   });
 
-  const qrCodeDataUrl = await generateQrDataUrl(qrCodeToken, env.clientUrl);
+ const qrCodeDataUrl = await generateQrDataUrl(qrCodeToken, env.clientUrl);
+
+console.log('[QR DEBUG] SESSION CREATED', {
+  sessionId: session.id,
+  token: debugToken(qrCodeToken),
+  expiresAt: qrExpiresAt.toISOString(),
+});
 
   const registrations = await prisma.courseRegistration.findMany({
     where: { courseId: input.courseId },
@@ -201,14 +217,33 @@ async function validateSessionForStudent(studentId, session) {
 }
 
 async function scanQrCode(studentId, qrCodeToken, req) {
-  const session = await prisma.attendanceSession.findUnique({ where: { qrToken: qrCodeToken } });
+  console.log('[QR DEBUG] SCAN RECEIVED', {
+    studentId,
+    token: debugToken(qrCodeToken),
+  });
+
+  const session = await prisma.attendanceSession.findUnique({
+    where: { qrToken: qrCodeToken },
+  });
+
+  console.log('[QR DEBUG] DATABASE LOOKUP', {
+    found: !!session,
+    sessionId: session?.id || null,
+    status: session?.status || null,
+    expiresAt: session?.qrExpiresAt || null,
+  });
 
   if (!session) {
     throw AppError.notFound('Attendance session not found or QR code is invalid');
   }
 
-  if (session.qrExpiresAt && new Date(session.qrExpiresAt).getTime() <= Date.now()) {
-    throw AppError.badRequest('This QR code has expired. Please scan the lecturer’s current QR code.');
+  if (
+    session.qrExpiresAt &&
+    new Date(session.qrExpiresAt).getTime() <= Date.now()
+  ) {
+    throw AppError.badRequest(
+      'This QR code has expired. Please scan the lecturer’s current QR code.'
+    );
   }
 
   await validateSessionForStudent(studentId, session);

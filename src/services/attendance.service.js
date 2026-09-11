@@ -10,25 +10,31 @@ const env = require('../config/env');
 // SESSION LIFECYCLE (lecturer)
 // ------------------------------------------------------------
 
+function getQrExpiry() {
+  const seconds = Number(process.env.QR_TOKEN_ROTATE_SECONDS || 20);
+  return new Date(Date.now() + seconds * 1000);
+}
+
 async function createSession(lecturerId, input, req) {
   const course = await prisma.course.findUnique({ where: { id: input.courseId } });
-if (!course) throw AppError.notFound('Course not found');
+  if (!course) throw AppError.notFound('Course not found');
 
-const assignment = await prisma.course_assignments.findUnique({
-  where: {
-    courseId_lecturerId: {
-      courseId: input.courseId,
-      lecturerId,
+  const assignment = await prisma.course_assignments.findUnique({
+    where: {
+      courseId_lecturerId: {
+        courseId: input.courseId,
+        lecturerId,
+      },
     },
-  },
-});
+  });
 
-if (!assignment) {
-  throw AppError.forbidden('You are not the assigned lecturer for this course');
-}
+  if (!assignment) {
+    throw AppError.forbidden('You are not the assigned lecturer for this course');
+  }
 
   const qrCodeToken = generateQrToken();
   const sessionToken = generateSessionToken();
+  const qrExpiresAt = getQrExpiry();
 
   const session = await prisma.attendanceSession.create({
     data: {
@@ -40,6 +46,7 @@ if (!assignment) {
       endTime: new Date(input.endTime),
       status: 'OPEN',
       qrToken: qrCodeToken,
+      qrExpiresAt,
       sessionToken,
       requiredVerification: input.requiredVerification || 'QR_AND_FINGERPRINT',
     },
@@ -48,7 +55,6 @@ if (!assignment) {
 
   const qrCodeDataUrl = await generateQrDataUrl(qrCodeToken, env.clientUrl);
 
-  // Notify all students registered for this course.
   const registrations = await prisma.courseRegistration.findMany({
     where: { courseId: input.courseId },
     include: { student: { select: { userId: true } } },
@@ -80,7 +86,10 @@ async function closeSession(lecturerId, sessionId, req) {
   if (session.lecturerId !== lecturerId) throw AppError.forbidden('Not your session to close');
   if (session.status === 'CLOSED') throw AppError.conflict('Session is already closed');
 
-  const updated = await prisma.attendanceSession.update({ where: { id: sessionId }, data: { status: 'CLOSED' } });
+  const updated = await prisma.attendanceSession.update({
+    where: { id: sessionId },
+    data: { status: 'CLOSED', qrToken: null, qrExpiresAt: null },
+  });
 
   const registrations = await prisma.courseRegistration.findMany({
     where: { courseId: session.courseId },
@@ -113,7 +122,11 @@ async function regenerateQr(lecturerId, sessionId) {
   if (session.status !== 'OPEN') throw AppError.badRequest('Session is not open');
 
   const qrCodeToken = generateQrToken();
-  const updated = await prisma.attendanceSession.update({ where: { id: sessionId }, data: { qrToken: qrCodeToken } });
+  const qrExpiresAt = getQrExpiry();
+  const updated = await prisma.attendanceSession.update({
+    where: { id: sessionId },
+    data: { qrToken: qrCodeToken, qrExpiresAt },
+  });
   const qrCodeDataUrl = await generateQrDataUrl(qrCodeToken, env.clientUrl);
   return { ...updated, qrCodeDataUrl };
 }
@@ -187,35 +200,30 @@ async function validateSessionForStudent(studentId, session) {
   if (existingRecord) throw AppError.conflict('Attendance already recorded for this session');
 }
 
-/**
- * Step 1 of QR flow: student scans QR, client sends the token here.
- * If the session's requiredVerification is QR_CODE only, attendance
- * is recorded immediately. If QR_AND_FINGERPRINT, this only confirms
- * the QR is valid and returns the sessionToken the client needs to
- * pass into the fingerprint step next.
- */
 async function scanQrCode(studentId, qrCodeToken, req) {
-  const session = await prisma.attendanceSession.findUnique({ where: { qrToken: qrCodeToken  } });
+  const session = await prisma.attendanceSession.findUnique({ where: { qrToken: qrCodeToken } });
+
+  if (!session) {
+    throw AppError.notFound('Attendance session not found or QR code is invalid');
+  }
+
+  if (session.qrExpiresAt && new Date(session.qrExpiresAt).getTime() <= Date.now()) {
+    throw AppError.badRequest('This QR code has expired. Please scan the lecturer’s current QR code.');
+  }
+
   await validateSessionForStudent(studentId, session);
 
   if (session.requiredVerification === 'QR_CODE') {
     return recordAttendance(studentId, session, 'QR_CODE', req);
   }
 
-  // QR_AND_FINGERPRINT: QR alone doesn't create the record yet.
   return {
     requiresFingerprint: true,
     sessionToken: session.sessionToken,
-    course: undefined, // frontend already has course context from session lookup below if needed
     sessionId: session.id,
   };
 }
 
-/**
- * Step 2 (or standalone Method 2): after WebAuthn verification
- * succeeds, this actually writes the AttendanceRecord row.
- * `verificationMethod` reflects what was actually performed.
- */
 async function recordAttendance(studentId, session, verificationMethod, req) {
   const status = determineStatus(session);
 
@@ -251,31 +259,15 @@ async function recordAttendance(studentId, session, verificationMethod, req) {
   return record;
 }
 
-/**
- * Fingerprint-only path (Method 2, mobile) — no QR involved.
- *
- * SECURITY: the WebAuthn assertion is verified INSIDE this function,
- * in the same call that records attendance. We never accept a bare
- * "trust me, fingerprint passed" flag from the client — that would
- * let anyone skip the biometric step by calling the API directly.
- * `webauthnResponse` is the raw assertion from navigator.credentials.get().
- */
 async function signAttendanceViaFingerprint(studentId, userId, attendanceSessionId, webauthnResponse, req) {
   const session = await prisma.attendanceSession.findUnique({ where: { id: attendanceSessionId } });
   await validateSessionForStudent(studentId, session);
 
-  // Throws if the assertion is invalid/forged/wrong device.
   await webauthnService.verifyAuthentication(userId, webauthnResponse);
 
   return recordAttendance(studentId, session, 'DEVICE_FINGERPRINT', req);
 }
 
-/**
- * Combined flow completion: after scanQrCode returned
- * requiresFingerprint + sessionToken, the client performs the
- * WebAuthn ceremony and this call verifies that assertion AND
- * records attendance atomically as QR_AND_FINGERPRINT.
- */
 async function completeQrAndFingerprint(studentId, userId, sessionToken, webauthnResponse, req) {
   const session = await prisma.attendanceSession.findUnique({ where: { sessionToken } });
   await validateSessionForStudent(studentId, session);
